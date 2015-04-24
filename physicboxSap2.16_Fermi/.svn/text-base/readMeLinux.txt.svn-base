@@ -1,0 +1,24 @@
+2008/01/29
+Takahiro HARADA
+
+
+<< Preparation >>
+To build, cmake and FindCuda.cmake are required. 
+http://www.cmake.org/HTML/Index.html
+http://www.sci.utah.edu/~abe/FindCuda.html
+
+
+<< Procedure of Build >>
+1. Move to ./build directory
+2. ccmake ..
+3. ./buildAll.sh
+Several builds may be required because of the dependency of the libraries. 
+
+Most of the makes are for the libraries. Only cudaPhysics/CMakeLists.txt is for the application. So if you change the application, modify the file and build again. 
+
+
+<< Known Issues >>
+UniformGrid and SlicedGrid cannot live at the same time (this may because of the duplication of the name of a function.)
+
+
+

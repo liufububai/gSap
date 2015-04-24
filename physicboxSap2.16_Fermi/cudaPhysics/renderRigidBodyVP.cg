@@ -1,0 +1,100 @@
+#define rigidBodySize	128
+
+
+
+#define PI 3.14159276
+
+//==== QUATERNION ====
+float4 mulQuaternion(float4 a,float4 b){
+	float4 ans;
+	ans.xyz=cross(a.xyz,b.xyz);
+	ans.xyz+=a.w*b.xyz+b.w*a.xyz;
+	ans.w=a.w*b.w-dot(a.xyz,b.xyz);
+	return ans;
+}
+
+float4 invertQuaternion(float4 a){
+	return float4(-a.xyz,a.w);
+}
+
+float4 normalizeQuaternion(float4 a){
+	float qLength=length(a.xyzw);
+
+	return a/qLength;
+}
+
+float3 rotateVectorWQuaternion(float4 quat,float4 inVec){
+	inVec.w=0;
+	float4 quatInv = invertQuaternion(quat);
+	float4 rotatedPos = mulQuaternion(mulQuaternion(quat,inVec),quatInv);
+	return rotatedPos.xyz;
+}
+
+float4 w2Quaternion(float3 w){
+	float4 ans;
+	float lw=length(w);
+
+	ans.xyz = normalize(w);
+	ans.w = lw*0.5;
+	ans.xyz *= sin(ans.w);
+	ans.w = cos(ans.w);
+
+	if(lw < 0.0001)
+		ans=float4(0,0,0,1);
+
+	return ans;
+}
+
+//==== RIGID BODY ====
+float2 index2TexCrd(float index){
+	float2 texCrd;
+	float d=1/(float)rigidBodySize*0.5;
+	float tmp=index/(float)rigidBodySize;
+	texCrd.x=modf(tmp,texCrd.y);
+	texCrd=float2(texCrd.x+d,texCrd.y/(float)rigidBodySize+d);
+	return texCrd;
+}
+
+
+uniform sampler2D posTex: TEXUNIT0;
+uniform sampler2D quatTex: TEXUNIT1;
+
+float4 quat={1,1,0,0.5*PI};
+float3 centerMass={0.5,0,0};
+
+void main(//uniform int o_id : INSTANCEID,
+          float4 inPosition: POSITION,
+		  float4 inNormal: NORMAL,
+		  float2 inTexCrd: TEXCOORD,
+		  uniform  float4x4 modelViewProjMatrix,
+		  uniform  float4x4 modelViewMatrix,
+		  out float4 outPos: POSITION,
+		  out float3 outTexCrd: TEXCOORD1,
+		  out float4 outColor: COLOR0)
+{
+
+			  float4 centerOfMass;
+			  float index=inTexCrd.x;// + o_id;
+			  float2 texCrd=index2TexCrd(index);
+			  centerOfMass=tex2D(posTex,texCrd);
+			  quat=tex2D(quatTex,texCrd);
+
+			  float4 rotatedPos;
+			  rotatedPos.xyz=rotateVectorWQuaternion(quat,inPosition);
+			  rotatedPos.w=1;
+
+			  rotatedPos.xyz+=centerOfMass.xyz;
+
+			  outPos=mul(modelViewProjMatrix,rotatedPos);
+
+			  //==== LIGHTING ====
+			  float3 lightDir=float3(1,1,1);
+			  outColor.xyz=0.2+0.8*float3(pow(sin(inTexCrd.x/7.0f),2),
+				  pow(sin(inTexCrd.x/3.0f),2),
+				  pow(sin(inTexCrd.x/4.0f),2));
+			  inNormal.w=0;
+			  inNormal.xyz=rotateVectorWQuaternion(quat,inNormal);
+			  inNormal=mul(modelViewMatrix,inNormal);
+			  outColor.xyz*=dot(normalize(inNormal.xyz),normalize(lightDir));
+}
+

@@ -1,0 +1,53 @@
+
+
+# Note set CUDA_BUILD_TYPE to either "Emulation" or "Device" to switch between generation 
+# modes. 
+
+PROJECT(Cuda-project)
+
+INCLUDE(${CMAKE_SOURCE_DIR}/CMake/cuda/FindCuda.cmake)
+
+
+###################################
+#	SORTINGS
+SUBDIRS(
+	prefixSum
+)
+SUBDIRS(
+	cudaRadixSort
+)
+SUBDIRS(
+	cudaBitonicSort
+)
+
+###################################
+#	OTHERS
+SUBDIRS(
+	cudaDem
+)
+SUBDIRS(
+	grid
+)
+SUBDIRS(
+	uniformGrid
+)
+SUBDIRS(
+	slicedGrid
+)
+SUBDIRS(
+	cudaDistanceFunction
+)
+SUBDIRS(
+	connectorOfParticles
+)
+SUBDIRS(
+	utilities
+)
+
+###################################
+#	APPLICATION
+SUBDIRS(
+#	cudaPhysics
+	multiThreading	
+)
+

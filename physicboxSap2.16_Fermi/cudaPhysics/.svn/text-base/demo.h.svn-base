@@ -1,0 +1,385 @@
+#include "rigidBodySystem.h"
+#include "aabb.h"
+#include "transferUtils.h"
+
+#define MAX_NUM_BODIES 5000
+#define MAX_NUM_PAIRS MAX_NUM_BODIES*4
+
+const int s_tableSize = 5;
+float colorTable[s_tableSize][3]={
+	{1,0,0},
+	{0,1,0},
+	{0,0,1},
+	{1,1,0},
+	{1,0,1},
+};
+
+
+/*
+Prepare
+1. set() to set pos, orientation, etc
+2. setShape() to set shapeGeom
+3. compile() 
+
+Simulation
+1. integrate()
+2. updateSamples()
+3. calcBoundingSphere() or calcAabb() depends on what kind of broadphase you use
+	if spheres are used, dont have to call calcAabb
+4. Do your broadphase. See cpuBroadphase for example
+5. step()
+*/
+
+
+class Demo
+{
+	public:
+		enum
+		{
+			MAX_SHAPE_DATAS = 5, 
+		};
+		struct ShapeGeometry
+		{
+			enum
+			{
+				MAX_TRI = 12, 
+				MAX_VTX = 8,
+			};
+			int m_numTris;
+			int m_numVtx;
+			int3 m_tris[MAX_TRI];
+			float4 m_vtx[MAX_VTX];
+		};
+
+		inline
+		Demo() : m_system(0), m_counter(0), m_debugDisplay(false){}
+		inline
+		~Demo();
+		inline
+		void init();
+		inline
+		void step();
+		inline
+		void readback();
+		inline
+		void render();
+
+		inline
+		void cpuBroadphase();
+
+
+	public:
+		RigidBodySystem* m_system;
+		ShapeGeometry m_shapeGeom[ MAX_SHAPE_DATAS ];
+		//	copy for debug rendering
+		float4* m_pos;
+		float4* m_quat;
+		int* m_shapeIdx;
+		ShapeData* m_shapeData;
+
+		//	etc
+		int m_counter;
+		bool m_debugDisplay;
+};
+
+inline
+void createBox(float x, float y, float z, 
+			   int3 tris[12], float4 vtx[8])
+{
+	vtx[0] = make_float4(-x,-y,-z,0);
+	vtx[1] = make_float4(-x,-y,z,0);
+	vtx[2] = make_float4(x,-y,z,0);
+	vtx[3] = make_float4(x,-y,-z,0);
+
+	vtx[4] = make_float4(-x,y,-z,0);
+	vtx[5] = make_float4(-x,y,z,0);
+	vtx[6] = make_float4(x,y,z,0);
+	vtx[7] = make_float4(x,y,-z,0);
+
+	tris[0] = make_int3(4,0,5);
+	tris[1] = make_int3(0,1,5);
+	tris[2] = make_int3(5,1,6);
+	tris[3] = make_int3(1,2,6);
+
+	tris[4] = make_int3(6,2,7);
+	tris[5] = make_int3(2,3,7);
+	tris[6] = make_int3(7,3,4);
+	tris[7] = make_int3(3,0,4);
+
+	tris[8] = make_int3(7,4,5);
+	tris[9] = make_int3(7,5,6);
+	tris[10] = make_int3(1,3,2);
+	tris[11] = make_int3(1,0,3);
+}
+
+inline
+float getRand(float min, float max)
+{
+	float range = max-min;
+	float r = (rand()%1000)/1000.f;
+	return r*range+min;
+}
+
+Demo::~Demo()
+{
+	delete m_system;
+	delete m_pos;
+	delete m_quat;
+	delete m_shapeIdx;
+	delete m_shapeData;
+}
+#define BENCH_MARK
+void Demo::init()
+{
+#ifdef BENCH_MARK
+	const int numRb = 1024;//*4;//16;
+	int nRow = 13;
+#else
+	const int numRb = 1024*2;//*4;//16;
+	int nRow = 19;
+#endif
+	if( m_system ) delete m_system;
+	{
+		m_system = new RigidBodySystem(MAX_NUM_BODIES, MAX_NUM_PAIRS);
+		m_pos = new float4[MAX_NUM_BODIES];
+		m_quat = new float4[MAX_NUM_BODIES];
+		m_shapeIdx = new int[MAX_NUM_BODIES];
+		m_shapeData = new ShapeData[MAX_SHAPE_DATAS];
+	}
+
+	float4* linVel = new float4[numRb];
+	float4* angVel = new float4[numRb];
+	float spacing = 1.8f;
+	for(int i=0; i<numRb; i++)
+	{
+		m_pos[i] = make_float4(i*0.1f, spacing*(i+1) , 0,0);
+		m_pos[i].x = ((i%nRow)-nRow/2)*spacing;
+		m_pos[i].z = (((i/nRow)%nRow)-nRow/2)*spacing;
+		m_pos[i].y = ((i)/(nRow*nRow)+1)*spacing;
+
+		m_quat[i] = make_float4(0,0,0,1);
+		m_quat[i] = make_float4( getRand(-1,1),getRand(-1,1),getRand(-1,1),getRand(-1,1));
+		linVel[i] = make_float4(0,0,0,0);
+		angVel[i] = make_float4(0,0,0,0);
+		angVel[i] = make_float4( getRand(-5,5),getRand(-5,5),getRand(-5,5),getRand(-5,5));
+		m_shapeIdx[i] = 0;
+		if( i%6==0 ) m_shapeIdx[i] = 1;
+	}
+
+	m_system->set( m_pos, m_quat, linVel, angVel, m_shapeIdx, numRb );
+
+	delete linVel;
+	delete angVel;
+
+	{
+		int3* tris = m_shapeGeom[0].m_tris;
+		float4* vtx = m_shapeGeom[0].m_vtx;
+		m_shapeGeom[0].m_numTris = 12; m_shapeGeom[0].m_numVtx = 8;
+		float size = 0.25f;
+
+		createBox(size, size*1.5, size, tris, vtx);
+		m_system->setShape(0, tris, vtx, 12, 8, 100.f, RigidBodySystem::SAMPLE_FACE_CENTER);
+
+		tris = m_shapeGeom[1].m_tris;
+		vtx = m_shapeGeom[1].m_vtx;
+		m_shapeGeom[1].m_numTris = 12; m_shapeGeom[1].m_numVtx = 8;
+		createBox(size*2.5, size*2.5, size*2.5, tris, vtx);
+		m_system->setShape(1, tris, vtx, 12, 8, 100.f, RigidBodySystem::SAMPLE_FACE_CENTER);
+	}
+
+	m_system->getSimConfig().m_nSolverIter = 2;
+	m_system->compile();
+	m_system->calcAabb();
+	m_system->calcBoundingSphere();
+}
+
+void Demo::step()
+{
+	printf("%d : ", m_counter);
+	float dt = 0.013;
+	m_system->integrate( dt );
+	m_system->updateSamples();
+	m_system->calcAabb();
+	cpuBroadphase();
+	m_system->step( dt );
+
+	m_counter++;
+	{
+		char txt[128];
+		sprintf(txt,"Demo: Rigid Body System: %d", m_counter);
+		glutSetWindowTitle(txt);
+	}
+}
+
+void Demo::readback()
+{
+	m_system->cpyBodyData( m_pos, m_quat, m_system->getNumBodies() );
+}
+
+void Demo::render()
+{
+	//	debug display from system
+	if( m_debugDisplay )
+	{
+//		m_system->showSamples();
+		m_system->showContacts();
+		m_system->showBatches();
+	}
+
+	//	simple rendering using data on main mem
+	for(int i=0; i<m_system->getNumBodies(); i++)
+	{
+		float4* vtx = m_shapeGeom[m_shapeIdx[i]].m_vtx;
+		int3* tris = m_shapeGeom[m_shapeIdx[i]].m_tris;
+		float4 localVtx[8];
+		for(int j=0; j<8; j++)
+		{
+			VecUtils::rotateVector(m_quat[i], vtx[j],localVtx[j]);
+			localVtx[j].x += m_pos[i].x;
+			localVtx[j].y += m_pos[i].y;
+			localVtx[j].z += m_pos[i].z;
+		}
+		float c = 0.5f;
+		glColor3f(c,c,c);
+		if( m_debugDisplay )
+		{
+			glBegin(GL_LINES);
+			for(int j=0; j<12; j++)
+			{
+				float4 x = localVtx[tris[j].x];
+				float4 y = localVtx[tris[j].y];
+				float4 z = localVtx[tris[j].z];
+				glVertex3f(x.x, x.y, x.z); glVertex3f(y.x, y.y, y.z);
+				glVertex3f(y.x, y.y, y.z); glVertex3f(z.x, z.y, z.z);
+				glVertex3f(z.x, z.y, z.z); glVertex3f(x.x, x.y, x.z);
+			}
+			glEnd();
+			glColor3f(1,1,1);
+		}
+		else
+		{
+			glEnable(GL_NORMALIZE);
+			glEnable(GL_LIGHTING);
+			glEnable(GL_LIGHT0);
+
+			int tIdx = i%s_tableSize;
+			float cs = 0.6f;
+			glColor3f(colorTable[tIdx][0]+cs, colorTable[tIdx][1]+cs, colorTable[tIdx][2]+cs);
+			glBegin(GL_TRIANGLES);
+			for(int j=0; j<12; j++)
+			{
+				float4 x = localVtx[tris[j].x];
+				float4 y = localVtx[tris[j].y];
+				float4 z = localVtx[tris[j].z];
+				float4 xy = y-x;
+				float4 xz = z-x;
+				float4 n =make_float4( cross(make_float3(xy), make_float3(xz)), 0);
+				n = normalize(n);
+				glNormal3f(n.x, n.y, n.z);
+				glVertex3f(x.x, x.y, x.z);
+				glVertex3f(y.x, y.y, y.z);
+				glVertex3f(z.x, z.y, z.z);
+			}
+			glEnd();
+			glColor3f(1,1,1);
+
+			glDisable(GL_LIGHTING);
+			glDisable(GL_LIGHT0);
+		}
+	}
+	if( !m_debugDisplay )
+	{
+		glEnable(GL_NORMALIZE);
+		glEnable(GL_LIGHTING);
+		glEnable(GL_LIGHT0);
+
+		float s = 60.f;
+		glBegin(GL_QUADS);
+		glNormal3f(0,1,0);
+		glVertex3f(-s,0,-s);
+		glVertex3f(s,0,-s);
+		glVertex3f(s,0,s);
+		glVertex3f(-s,0,s);			
+		glEnd();
+		
+		glDisable(GL_LIGHTING);
+		glDisable(GL_LIGHT0);
+	}
+
+	//	show bounding spheres
+	if(0)
+	if( m_debugDisplay )
+	{
+		float4* bs;
+		float4* bsD = m_system->getBoundingSphere();
+		float4 x = make_float4(1,0,0,0);
+		float4 y = make_float4(0,1,0,0);
+		TransferUtils::allocateAndCpyD2H((void*&)bs, bsD, sizeof(float4)*m_system->getNumBodies());
+
+		glColor3f(1,0,0);
+		glPointSize(3.f);
+		glBegin(GL_LINES);
+		for(int i=0; i<m_system->getNumBodies(); i++)
+		{
+			float4 xp, xm, yp, ym;
+			xp = bs[i] + x * bs[i].w;
+			xm = bs[i] - x * bs[i].w;
+			yp = bs[i] + y * bs[i].w;
+			ym = bs[i] - y * bs[i].w;
+			
+			glVertex3f(bs[i].x, bs[i].y, bs[i].z);
+			glVertex3f(xp.x, xp.y, xp.z);
+
+			glVertex3f(bs[i].x, bs[i].y, bs[i].z);
+			glVertex3f(xm.x, xm.y, xm.z);
+
+			glVertex3f(bs[i].x, bs[i].y, bs[i].z);
+			glVertex3f(yp.x, yp.y, yp.z);
+
+			glVertex3f(bs[i].x, bs[i].y, bs[i].z);
+			glVertex3f(ym.x, ym.y, ym.z);
+		}
+		glEnd();
+
+		free( bs );
+	}
+
+}
+
+void Demo::cpuBroadphase()
+{
+	const Aabb* hAabbs;
+	int2* hPairs;
+	const Aabb* aabbs = m_system->getAabbs();
+	int2* pairs = m_system->getBroadphasePairPtr();
+	hAabbs = aabbs; hPairs = pairs;
+	if( m_system->m_procType == RigidBodySystem::SIM_GPU )
+	{
+		TransferUtils::allocateAndCpyD2H((void*&)hAabbs, (void*)aabbs, sizeof(Aabb)*m_system->getNumBodies());
+		TransferUtils::allocateAndCpyD2H((void*&)hPairs, pairs, sizeof(int2)*MAX_NUM_PAIRS);
+	}
+
+	int numPairs = 0;
+
+	for(int i=0; i<m_system->getNumBodies(); i++)
+	{
+		const Aabb& iAabb = hAabbs[i];
+		for(int j=i+1; j<m_system->getNumBodies(); j++)
+		{
+			const Aabb& jAabb = hAabbs[j];
+			if( iAabb.overlaps( jAabb ) )
+			{
+				hPairs[ numPairs++ ] = make_int2(i, j);
+			}
+		}
+	}
+
+	if( m_system->m_procType == RigidBodySystem::SIM_GPU )
+	{
+		TransferUtils::cpyAndFreeH2D((void*)hAabbs, (void*)aabbs, sizeof(Aabb)*m_system->getNumBodies());
+		TransferUtils::cpyAndFreeH2D(hPairs, pairs, sizeof(int2)*MAX_NUM_PAIRS);
+	}
+
+	m_system->setNumPairs( numPairs );
+}
+
